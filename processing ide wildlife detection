@@ -1,0 +1,109 @@
+import processing.serial.*;
+Serial esp;
+
+// Background
+PImage bg;
+
+// Node class for multiple ESP32 units
+class Node {
+  String name;
+  float x, y;
+
+  boolean beam;
+  boolean vib;
+  float temp;
+
+  Node(String name, float x, float y) {
+    this.name = name;
+    this.x = x;
+    this.y = y;
+  }
+
+  void drawNode() {
+    // Node circle
+    fill(0, 200, 255);
+    ellipse(x, y, 30, 30);
+
+    fill(255);
+    text(name, x - 20, y - 25);
+
+    // IR beam
+    stroke(beam ? color(255, 0, 0) : color(100));
+    strokeWeight(4);
+    line(x, y, x + 150, y);
+
+    // Vib indicator
+    fill(vib ? color(255, 80, 0) : color(120));
+    ellipse(x + 40, y + 40, 15, 15);
+
+    // Temperature indicator
+    fill(0, 255, 80);
+    text("T: " + nf(temp, 1, 1), x - 15, y + 35);
+  }
+}
+
+// Create your nodes
+Node n1 = new Node("Node A", 200, 300);
+Node n2 = new Node("Node B", 600, 220);
+Node n3 = new Node("Node C", 450, 500);
+
+void setup() {
+  size(1024, 1024);
+
+  // Load background image correctly
+  bg = loadImage("C:\\Users\\JIYA KULKARNI\\Downloads\\OneDrive\\Desktop\\codered.jpg");
+  bg.resize(width, height);
+
+  // Open correct COM port
+  printArray(Serial.list());
+  esp = new Serial(this, Serial.list()[2], 115200);  // COM7
+  esp.bufferUntil('\n');
+
+  textSize(16);
+}
+
+void draw() {
+  background(bg);
+
+  // Draw nodes
+  n1.drawNode();
+  n2.drawNode();
+  n3.drawNode();
+}
+
+void serialEvent(Serial p) {
+  String line = trim(p.readStringUntil('\n'));
+
+  if (line == null || line.length() < 3) return;
+
+  println(line);
+
+  // Expected ESP32 format:
+  // IR:1,1 VIB:0 TEMP:25.3 beam:0 vib:1 tempEv:0
+
+  String[] parts = split(line, " ");
+
+  // Parse basic values
+  int ir1 = int(split(parts[0].substring(3), ',')[0]);
+  int ir2 = int(split(parts[0].substring(3), ',')[1]);
+
+  int vibRaw = int(parts[1].substring(4));
+  float t = float(parts[2].substring(5));
+
+  boolean beamBroken = (ir1 == 0 || ir2 == 0);
+  boolean vibration = (vibRaw == 0);
+
+  // Update Node A (main sensor node)
+  n1.beam = beamBroken;
+  n1.vib = vibration;
+  n1.temp = t;
+
+  // Auto-update others for demo
+  n2.beam = random(1) > 0.7;
+  n2.vib = random(1) > 0.85;
+  n2.temp = 25 + random(3);
+
+  n3.beam = random(1) > 0.8;
+  n3.vib = random(1) > 0.9;
+  n3.temp = 24 + random(4);
+}
