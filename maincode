@@ -1,0 +1,64 @@
+// ESP32 fingerprint example using HardwareSerial (Serial2)
+// Wiring (recommended):
+// FP VCC -> 3V3
+// FP GND -> GND
+// FP TX  -> ESP32 GPIO21 (RX_PIN)
+// FP RX  -> ESP32 GPIO22 (TX_PIN)
+
+#include <Adafruit_Fingerprint.h>
+
+// choose pins you wired (change if needed)
+#define RX_PIN 21   // ESP32 receives from fingerprint TX
+#define TX_PIN 22   // ESP32 transmits to fingerprint RX
+
+HardwareSerial hwSerial(2); // use UART2 (Serial2)
+Adafruit_Fingerprint finger(&hwSerial);
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("Fingerprint + ESP32 example");
+
+  // Start hardware serial to fingerprint
+  // baud, config, rxPin, txPin
+  hwSerial.begin(57600, SERIAL_8N1, RX_PIN, TX_PIN);
+  delay(100);
+
+  finger.begin(57600);
+  if (finger.verifyPassword()) {
+    Serial.println("Found fingerprint sensor!");
+  } else {
+    Serial.println("Fingerprint sensor not found :(");
+    // continue anyway -- maybe sensor will respond later
+  }
+
+  Serial.println("Waiting for finger...");
+}
+
+// helper: get ID or 0 if none
+uint8_t getFingerprintID() {
+  uint8_t p = finger.getImage();
+  if (p != FINGERPRINT_OK) return 0;
+
+  p = finger.image2Tz();
+  if (p != FINGERPRINT_OK) return 0;
+
+  p = finger.fingerFastSearch();
+  if (p != FINGERPRINT_OK) return 0;
+
+  // found a match
+  Serial.print("Found ID #"); Serial.print(finger.fingerID);
+  Serial.print(" confidence: "); Serial.println(finger.confidence);
+  return finger.fingerID;
+}
+
+void loop() {
+  uint8_t id = getFingerprintID();
+  if (id) {
+    // do something on match (example: print + blink)
+    Serial.print("Matched ID: "); Serial.println(id);
+    // TODO: send to network hub, toggle relay, etc.
+    delay(1500); // small debounce
+  }
+  delay(200);
+}
