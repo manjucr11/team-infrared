@@ -1,0 +1,189 @@
+/* InfraSentinel ESP32 — FINAL CORRECTED VERSION
+   Sensor logic (based on your test):
+   IR1, IR2 → LOW = beam broken
+   SW-420 vibration → LOW = vibration detected
+*/
+
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include "DHT.h"
+
+// ---------------- WIFI ----------------
+const char* WIFI_SSID = "CODE-RED-3.0";
+const char* WIFI_PASS = "codered@3";
+
+// ------------ Raspberry Pi API --------
+const char* PI_IP  = "192.168.1.100";
+const int   PI_PORT = 5000;
+
+// ------------- SENSOR PINS ------------
+#define DHTPIN 4
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+const int IR1_PIN = 26;
+const int IR2_PIN = 27;
+const int VIB_PIN = 33;   // SW-420 DO (LOW = vibration)
+
+const int BUZZ_PIN  = 25;
+const int RED_LED   = 14;
+const int GREEN_LED = 12;
+const int YELLOW_LED= 13;
+
+// ---- Detection Params ----
+unsigned long lastSend = 0;
+const unsigned long sendInterval = 3000; // ms
+const float TEMP_RISE_THRESHOLD = 1.5;
+const unsigned long VEHICLE_MIN_MS = 1500;
+
+// ---- Runtime State ----
+float baselineTemp = NAN;
+unsigned long eventStart = 0;
+bool inEvent = false;
+
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+
+  // Pin setup
+  pinMode(IR1_PIN, INPUT);
+  pinMode(IR2_PIN, INPUT);
+  pinMode(VIB_PIN, INPUT_PULLUP);  // LOW = vibration
+
+  pinMode(BUZZ_PIN, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(YELLOW_LED, OUTPUT);
+
+  digitalWrite(BUZZ_PIN, LOW);
+  digitalWrite(RED_LED, LOW);
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(YELLOW_LED, LOW);
+
+  dht.begin();
+
+  // WiFi
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  Serial.print("Connecting to WiFi...");
+  unsigned long t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) {
+    Serial.print(".");
+    delay(250);
+  }
+  Serial.println();
+  if (WiFi.status() == WL_CONNECTED)
+    Serial.println(WiFi.localIP());
+
+  // Baseline temp
+  float acc = 0; int samples = 6;
+  for (int i = 0; i < samples; i++) {
+    float t = dht.readTemperature();
+    if (!isnan(t)) acc += t;
+    delay(250);
+  }
+  if (acc > 0) baselineTemp = acc / samples;
+  Serial.print("Baseline Temp: ");
+  Serial.println(baselineTemp);
+}
+
+void loop() {
+  // Read sensors
+  int ir1 = digitalRead(IR1_PIN);
+  int ir2 = digitalRead(IR2_PIN);
+  int vibRaw = digitalRead(VIB_PIN);
+  float t = dht.readTemperature();
+
+  bool beamBroken = (ir1 == LOW || ir2 == LOW);  // YOUR SENSOR LOGIC
+  bool vibration  = (vibRaw == LOW);             // YOUR SENSOR LOGIC
+  bool tempEvent = false;
+
+  if (!isnan(t) && !isnan(baselineTemp)) {
+    tempEvent = (t > baselineTemp + TEMP_RISE_THRESHOLD);
+  }
+
+  Serial.printf("IR:%d,%d  VIB:%d  TEMP:%.1f  beam:%d vib:%d tempEv:%d\n",
+                ir1, ir2, vibRaw, isnan(t)?-999:t,
+                beamBroken, vibration, tempEvent);
+
+  // EVENT START
+  if (beamBroken && !inEvent) {
+    inEvent = true;
+    eventStart = millis();
+    Serial.println("Event started");
+  }
+
+  // EVENT END
+  if (!beamBroken && inEvent) {
+    unsigned long dur = millis() - eventStart;
+    inEvent = false;
+    classifyAndSend(dur, vibration, tempEvent, t);
+  }
+
+  // Quick alert if strong vibration during beam break
+  if (beamBroken && vibration && millis() - lastSend > sendInterval) {
+    unsigned long dur = inEvent ? millis() - eventStart : 0;
+    classifyAndSend(dur, vibration, tempEvent, t);
+  }
+
+  // Alive LED blink
+  static unsigned long lastBlink = 0;
+  if (millis() - lastBlink > 700) {
+    digitalWrite(YELLOW_LED, !digitalWrite);
+    lastBlink = millis();
+  }
+
+  delay(150);
+}
+
+void classifyAndSend(unsigned long durationMs, bool vibration, bool tempEvent, float temp) {
+  // CLASSIFICATION
+  String cls = "unknown";
+
+  if (durationMs >= VEHICLE_MIN_MS && vibration) cls = "vehicle";
+  else if (vibration || tempEvent) cls = "human";
+
+  Serial.printf("Classification: %s (dur=%lu ms)\n", cls.c_str(), durationMs);
+
+  // Feedback
+  digitalWrite(RED_LED, HIGH);
+  digitalWrite(BUZZ_PIN, HIGH);
+  delay(250);
+  digitalWrite(BUZZ_PIN, LOW);
+
+  if (WiFi.status() == WL_CONNECTED && millis() - lastSend > sendInterval) {
+    lastSend = millis();
+    sendAlertToPi(cls, vibration, temp);
+  } else {
+    Serial.println("Not sending (WiFi or cooldown).");
+  }
+}
+
+void sendAlertToPi(String cls, bool vib, float temp) {
+  HTTPClient http;
+  String url = "http://" + String(PI_IP) + ":" + String(PI_PORT) + "/alert";
+  url += "?cls=" + cls;
+  url += "&vib=" + String(vib ? "1" : "0");
+  url += "&temp=" + String(temp, 1);
+  url += "&node=ESP32-1";
+
+  Serial.println("URL: " + url);
+
+  http.begin(url);
+  int code = http.GET();
+
+  if (code > 0) {
+    String resp = http.getString();
+    Serial.println("Pi Response: " + resp);
+
+    if (resp.indexOf("GRANTED") >= 0) {
+      digitalWrite(GREEN_LED, HIGH);
+      digitalWrite(RED_LED, LOW);
+      delay(4000);
+      digitalWrite(GREEN_LED, LOW);
+    }
+  } else {
+    Serial.println("HTTP Failed");
+  }
+
+  http.end();
+}
